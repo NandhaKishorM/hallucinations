@@ -1,0 +1,10 @@
+{
+  "total_circuits_analyzed": 0,
+  "verified_circuits": 0,
+  "failed_circuits": 0,
+  "overall_lipschitz_range": [
+    0.0,
+    0.0
+  ],
+  "circuits": []
+}

@@ -301,7 +301,8 @@ def _find_dense_paths(
 ) -> List[List[int]]:
     """
     Find high-density paths through the weight graph from embedding to logits.
-    Uses a greedy nearest-neighbor search layer by layer.
+    Uses a greedy nearest-neighbor search layer by layer, always picking the
+    closest node in the next layer regardless of distance threshold.
     """
     # Identify embedding and logits nodes
     embed_nodes = [n for n in nodes if n.component_type == "embedding"]
@@ -316,50 +317,100 @@ def _find_dense_paths(
     for node in nodes:
         layer_nodes.setdefault(node.layer_idx, []).append(node)
 
-    # Sort layer indices
+    # Sort layer indices (will be: -1, 0, 1, ..., 25, 26)
     sorted_layers = sorted(layer_nodes.keys())
-
-    # Edge weight threshold: only follow strong connections
-    threshold = np.percentile(
-        distance_matrix[distance_matrix > 0],
-        100 - tda_config.edge_weight_percentile,
-    )
+    min_path_layers = max(3, len(sorted_layers) // 3)  # Accept paths covering ≥ 1/3 of layers
 
     paths = []
-    num_paths_to_find = min(20, len(embed_nodes) * 2)
 
     for start_node in embed_nodes:
-        for _ in range(num_paths_to_find // len(embed_nodes)):
+        # Strategy 1: Greedy nearest-neighbor (shortest path through layers)
+        current_node_id = start_node.node_id
+        path = [current_node_id]
+
+        for layer_idx in sorted_layers[1:]:  # Skip embedding layer
+            candidates = layer_nodes.get(layer_idx, [])
+            if not candidates:
+                continue
+
+            candidate_ids = [c.node_id for c in candidates]
+            distances_to_candidates = distance_matrix[current_node_id, candidate_ids]
+
+            best_idx = np.argmin(distances_to_candidates)
+            next_node_id = candidate_ids[best_idx]
+            path.append(next_node_id)
+            current_node_id = next_node_id
+
+        if len(path) >= min_path_layers:
+            paths.append(path)
+
+        # Strategy 2: Explore diverse paths by starting from each component type
+        # per layer, finding N diverse bridges
+        for component_type in ["attention_head", "mlp_neuron"]:
             current_node_id = start_node.node_id
             path = [current_node_id]
 
-            for layer_idx in sorted_layers[1:]:  # Skip embedding layer
+            for layer_idx in sorted_layers[1:]:
+                candidates = [n for n in layer_nodes.get(layer_idx, [])
+                              if n.component_type == component_type]
+                if not candidates:
+                    # Fall back to any node in this layer
+                    candidates = layer_nodes.get(layer_idx, [])
+                if not candidates:
+                    continue
+
+                candidate_ids = [c.node_id for c in candidates]
+                distances_to_candidates = distance_matrix[current_node_id, candidate_ids]
+
+                best_idx = np.argmin(distances_to_candidates)
+                next_node_id = candidate_ids[best_idx]
+                path.append(next_node_id)
+                current_node_id = next_node_id
+
+            if len(path) >= min_path_layers:
+                paths.append(path)
+
+        # Strategy 3: Per-head paths — one bridge per attention head
+        for head_idx in range(arch.num_attention_heads):
+            current_node_id = start_node.node_id
+            path = [current_node_id]
+
+            for layer_idx in sorted_layers[1:]:
+                # Prefer this head's node, fall back to nearest
                 candidates = layer_nodes.get(layer_idx, [])
                 if not candidates:
                     continue
 
-                # Find nearest candidate
-                candidate_ids = [c.node_id for c in candidates]
-                distances_to_candidates = distance_matrix[current_node_id, candidate_ids]
-
-                # Pick the closest candidate (strongest connection = smallest distance)
-                best_idx = np.argmin(distances_to_candidates)
-                best_distance = distances_to_candidates[best_idx]
-
-                if best_distance <= threshold * 2:  # Allow some slack
+                # Try to find the specific head
+                head_candidates = [n for n in candidates
+                                   if n.component_type == "attention_head"
+                                   and n.component_idx == head_idx]
+                if head_candidates:
+                    next_node_id = head_candidates[0].node_id
+                else:
+                    candidate_ids = [c.node_id for c in candidates]
+                    distances_to_candidates = distance_matrix[current_node_id, candidate_ids]
+                    best_idx = np.argmin(distances_to_candidates)
                     next_node_id = candidate_ids[best_idx]
-                    path.append(next_node_id)
-                    current_node_id = next_node_id
 
-            # Only keep paths that reach close to the logits
-            if len(path) >= len(sorted_layers) // 2:
-                # Extend to logits if not already there
-                for logits_node in logits_nodes:
-                    path.append(logits_node.node_id)
+                path.append(next_node_id)
+                current_node_id = next_node_id
+
+            if len(path) >= min_path_layers:
                 paths.append(path)
 
-    logger.info(f"Found {len(paths)} candidate dense paths")
-    return paths
+    # Deduplicate paths (by their sorted node set)
+    seen_paths = set()
+    unique_paths = []
+    for path in paths:
+        key = tuple(path)
+        if key not in seen_paths:
+            seen_paths.add(key)
+            unique_paths.append(path)
+
+    logger.info(f"Found {len(unique_paths)} candidate dense paths "
+                f"(from {len(paths)} raw paths, {len(embed_nodes)} start nodes)")
+    return unique_paths
 
 
 def extract_topological_bridges(
@@ -397,7 +448,7 @@ def extract_topological_bridges(
             if node.attention_type == "global":
                 passes_global = True
 
-        # Associate concepts from SVD
+        # Associate concepts from SVD — use top concepts regardless of spike status
         associated_concepts = []
         for nid in path:
             node = node_by_id[nid]
@@ -405,8 +456,8 @@ def extract_topological_bridges(
                 layer_dec = concept_table.layers[node.layer_idx]
                 for mat_dec in layer_dec.matrices.values():
                     for concept in mat_dec.concepts[:3]:
-                        if concept.is_spike:
-                            associated_concepts.extend(concept.input_tokens[:2])
+                        # Always include top concepts (not just spikes)
+                        associated_concepts.extend(concept.input_tokens[:2])
 
         # Deduplicate concepts
         seen = set()

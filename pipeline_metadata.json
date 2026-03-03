@@ -1,0 +1,28 @@
+{
+  "pipeline": "ZITEP",
+  "target_model": "google/gemma-3-1b-it",
+  "model_path": "/root/.cache/huggingface/hub/models--google--gemma-3-1b-it/snapshots/dcc83ea841ab6100d6b47a070329e1ba4cf78752",
+  "device": "cuda",
+  "total_time_seconds": 102.34,
+  "svd_top_k": 64,
+  "tda_downsample": 8,
+  "smt_enabled": true,
+  "pruning_threshold": 85.0,
+  "structured_pruning": true,
+  "original_params": 999871488,
+  "kept_params": 302109696,
+  "compression_ratio": 0.302149,
+  "verified_circuits": 0,
+  "total_circuits_analyzed": 0,
+  "concepts_extracted": 4992,
+  "spike_count": 0,
+  "betti_0": 41,
+  "betti_1": 2,
+  "output_files": {
+    "pruned_model": "./zitep_output/zitep_pruned_model.safetensors",
+    "concept_table": "./zitep_output/concept_table.json",
+    "tda_results": "./zitep_output/tda_results.json",
+    "verification_report": "./zitep_output/verification_report.json",
+    "compression_report": "./zitep_output/compression_report.json"
+  }
+}

@@ -76,6 +76,7 @@ def _compute_layer_importance_mask(
     verified_bridge_ids: set,
     arch: GemmaArchitecture,
     config: PruningConfig,
+    use_magnitude_fallback: bool = False,
 ) -> Dict[str, torch.Tensor]:
     """
     Generate binary masks for all weight matrices in a single layer.
@@ -198,13 +199,26 @@ def _compute_layer_importance_mask(
                     )
                     masks[mat_name] = (abs_weights >= threshold).float()
     else:
-        # Layer not in any verified bridge — prune everything except layernorms
-        for mat_name, tensor in matrix_map.items():
-            if "layernorm" in mat_name:
-                # Keep layernorms as structural scaffolding
-                masks[mat_name] = torch.ones_like(tensor)
-            else:
-                masks[mat_name] = torch.zeros_like(tensor)
+        # Layer not in any verified bridge
+        if use_magnitude_fallback:
+            # Magnitude-based pruning: keep top percentile of weights by absolute value
+            for mat_name, tensor in matrix_map.items():
+                if "layernorm" in mat_name:
+                    masks[mat_name] = torch.ones_like(tensor)
+                else:
+                    abs_weights = tensor.abs()
+                    threshold = torch.quantile(
+                        abs_weights.float().flatten(),
+                        1.0 - (config.importance_percentile / 100.0),
+                    )
+                    masks[mat_name] = (abs_weights >= threshold).float()
+        else:
+            # Bridge-based: prune this layer entirely (keep only layernorms)
+            for mat_name, tensor in matrix_map.items():
+                if "layernorm" in mat_name:
+                    masks[mat_name] = torch.ones_like(tensor)
+                else:
+                    masks[mat_name] = torch.zeros_like(tensor)
 
     return masks
 
@@ -223,24 +237,33 @@ def generate_binary_mask(
     Returns:
         Tuple of (mask_dict mapping weight names → binary tensors, compression stats)
     """
-    # Identify which bridges passed verification
+    # Identify which bridges to use for masking
     verified_ids = set()
     for cv in verification_report.circuit_results:
         if cv.is_stable:
             verified_ids.add(cv.bridge_id)
 
-    if not verified_ids:
-        logger.warning("No circuits passed verification. Using top bridges by score instead.")
-        # Fallback: use top circuits by verification score
+    if not verified_ids and verification_report.circuit_results:
+        logger.warning("No circuits passed strict verification. Using top bridges by score.")
         sorted_results = sorted(
             verification_report.circuit_results,
             key=lambda x: x.verification_score,
             reverse=True,
         )
-        for cv in sorted_results[:3]:
+        for cv in sorted_results[:5]:
             verified_ids.add(cv.bridge_id)
 
-    logger.info(f"Generating masks for {len(verified_ids)} verified bridge(s)")
+    if not verified_ids and topology_result.bridges:
+        logger.warning("No verification results available. Using ALL topological bridges.")
+        for bridge in topology_result.bridges:
+            verified_ids.add(bridge.bridge_id)
+
+    use_magnitude_fallback = not verified_ids
+    if use_magnitude_fallback:
+        logger.warning("No topological bridges found. Falling back to magnitude-based pruning.")
+
+    logger.info(f"Generating masks for {len(verified_ids)} bridge(s) "
+                f"(magnitude fallback: {use_magnitude_fallback})")
 
     full_mask = {}
     per_layer_info = []
@@ -260,6 +283,7 @@ def generate_binary_mask(
                 verified_bridge_ids=verified_ids,
                 arch=arch,
                 config=config,
+                use_magnitude_fallback=use_magnitude_fallback,
             )
 
             layer_idx = layer_weights.layer_idx
