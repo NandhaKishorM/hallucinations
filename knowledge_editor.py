@@ -114,13 +114,13 @@ def edit_model_knowledge(
     avg_norm = torch.norm(w_down, dim=0).mean().item()
     boost_mag = avg_norm * boost_factor
     
-    # For each active neuron, shift its projection vector toward the target embedding
+    # For each active neuron, overwrite its projection vector with the scaled target embedding
     modified_count = 0
     for neuron_idx in active_neurons:
         if neuron_idx < w_down.shape[1]:
-            # Add the scaled target vector to the down_proj output for this neuron
-            # When this neuron fires, it will now push the hidden state toward target_vec
-            w_down[:, neuron_idx] += (target_vec_norm * boost_mag)
+            # Overwrite the original vector completely to avoid mixed-meaning representations
+            # When this neuron fires, it will now push the hidden state ONLY toward target_vec
+            w_down[:, neuron_idx] = (target_vec_norm * boost_mag)
             modified_count += 1
             
     # Convert back to bfloat16 and save
