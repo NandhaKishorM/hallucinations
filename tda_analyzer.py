@@ -101,23 +101,31 @@ def _build_node_features(
 ) -> List[WeightGraphNode]:
     """
     Build node feature vectors for the weight graph.
-    Each attention head and MLP neuron group becomes a node.
+
+    Nodes:
+      - 1 embedding node
+      - Per layer: 8 attention head nodes + 1 MLP summary node
+      - 1 logits node
+    Total: 1 + 26*(8+1) + 1 = 236 nodes — tractable for Ripser.
     """
     nodes = []
     node_id = 0
-    downsample = tda_config.downsample_factor
+    feat_dim = 64  # Fixed feature dimension for all nodes
 
-    # Embedding layer node
-    embed_feat = embedding_matrix.float().mean(dim=0).cpu().numpy()
-    # Reduce dimensionality via simple strided sampling
-    embed_feat_ds = embed_feat[::downsample]
+    # Embedding layer node — use top singular values of the embedding as feature
+    with torch.no_grad():
+        embed_sv = torch.linalg.svdvals(embedding_matrix[:1024, :].float().cpu())
+    embed_feat = np.zeros(feat_dim, dtype=np.float32)
+    copy_len = min(len(embed_sv), feat_dim)
+    embed_feat[:copy_len] = embed_sv[:copy_len].numpy()
+
     nodes.append(WeightGraphNode(
         node_id=node_id,
         layer_idx=-1,
         component_type="embedding",
         component_idx=0,
         attention_type="embedding",
-        feature_vector=embed_feat_ds,
+        feature_vector=embed_feat,
     ))
     node_id += 1
 
@@ -125,25 +133,20 @@ def _build_node_features(
         layer_idx = layer_weights.layer_idx
         attn_type = layer_weights.attention_type
 
-        # Attention head nodes — one per query head
-        # Feature vector = flattened Q projection weights for this head
+        # --- Attention head nodes (8 per layer) ---
         q_proj = layer_weights.q_proj.float().cpu()
         head_dim = arch.head_dim
-        num_heads = arch.num_attention_heads
 
-        for head_idx in range(num_heads):
+        for head_idx in range(arch.num_attention_heads):
             start = head_idx * head_dim
             end = start + head_dim
             head_weights = q_proj[start:end, :]  # (head_dim, hidden_size)
 
-            # Compress: take singular value profile as feature
-            sv = torch.linalg.svdvals(head_weights)
-            # Pad or truncate to fixed length
-            feat_len = arch.hidden_size // downsample
-            feature = np.zeros(feat_len, dtype=np.float32)
-            sv_np = sv.numpy()
-            copy_len = min(len(sv_np), feat_len)
-            feature[:copy_len] = sv_np[:copy_len]
+            with torch.no_grad():
+                sv = torch.linalg.svdvals(head_weights)
+            feature = np.zeros(feat_dim, dtype=np.float32)
+            cl = min(len(sv), feat_dim)
+            feature[:cl] = sv[:cl].numpy()
 
             nodes.append(WeightGraphNode(
                 node_id=node_id,
@@ -155,39 +158,39 @@ def _build_node_features(
             ))
             node_id += 1
 
-        # MLP neuron group nodes — sample neurons from gate_proj
+        # --- Single MLP summary node per layer ---
+        # Use the top singular values of gate_proj as the MLP's fingerprint
         gate = layer_weights.gate_proj.float().cpu()
-        num_neurons = gate.shape[0]
-        sample_step = max(1, num_neurons // (num_neurons // downsample))
+        with torch.no_grad():
+            mlp_sv = torch.linalg.svdvals(gate)
+        mlp_feat = np.zeros(feat_dim, dtype=np.float32)
+        cl = min(len(mlp_sv), feat_dim)
+        mlp_feat[:cl] = mlp_sv[:cl].numpy()
 
-        for neuron_idx in range(0, num_neurons, sample_step):
-            neuron_weights = gate[neuron_idx, :]  # (hidden_size,)
-            feature = neuron_weights.numpy()[::downsample]
+        nodes.append(WeightGraphNode(
+            node_id=node_id,
+            layer_idx=layer_idx,
+            component_type="mlp_neuron",
+            component_idx=0,
+            attention_type=attn_type,
+            feature_vector=mlp_feat,
+        ))
+        node_id += 1
 
-            nodes.append(WeightGraphNode(
-                node_id=node_id,
-                layer_idx=layer_idx,
-                component_type="mlp_neuron",
-                component_idx=neuron_idx,
-                attention_type=attn_type,
-                feature_vector=feature,
-            ))
-            node_id += 1
-
-    # Logits layer node (using embedding as proxy since weights are tied)
-    logits_feat = embedding_matrix.float().mean(dim=0).cpu().numpy()
-    logits_feat_ds = logits_feat[::downsample]
+    # Logits layer node (tied weights — reuse embedding SVD with slight variation)
+    logits_feat = embed_feat.copy()
     nodes.append(WeightGraphNode(
         node_id=node_id,
         layer_idx=arch.num_layers,
         component_type="logits",
         component_idx=0,
         attention_type="logits",
-        feature_vector=logits_feat_ds,
+        feature_vector=logits_feat,
     ))
     node_id += 1
 
-    logger.info(f"Built {len(nodes)} nodes for weight graph")
+    logger.info(f"Built {len(nodes)} nodes for weight graph "
+                f"(8 attn heads + 1 MLP per layer × {arch.num_layers} layers + embed + logits)")
     return nodes
 
 
