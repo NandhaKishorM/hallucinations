@@ -774,9 +774,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mode",
         type=str,
-        default="raw",
+        default="hf",
         choices=["raw", "hf"],
-        help="Inference mode: 'raw' (manual forward pass) or 'hf' (HuggingFace generate)",
+        help="Inference mode: 'hf' (HuggingFace generate, recommended) or 'raw' (manual forward pass)",
     )
     parser.add_argument(
         "--max-tokens",
