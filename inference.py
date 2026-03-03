@@ -35,8 +35,196 @@ from safetensors import safe_open
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+from rich.columns import Columns
+from rich.text import Text
 
 console = Console()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ZITEP Interpretation Pipeline
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ZITEPInterpreter:
+    """Loads ZITEP pipeline metadata and provides circuit-level interpretability."""
+
+    def __init__(self, zitep_dir: str):
+        self.zitep_dir = zitep_dir
+        self.tda = None
+        self.verification = None
+        self.compression = None
+        self.concepts = None
+        self.metadata = None
+        self._load_all()
+
+    def _load_json(self, filename: str):
+        path = os.path.join(self.zitep_dir, filename)
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        return None
+
+    def _load_all(self):
+        self.tda = self._load_json("tda_results.json")
+        self.verification = self._load_json("verification_report.json")
+        self.compression = self._load_json("compression_report.json")
+        self.concepts = self._load_json("concept_table.json")
+        self.metadata = self._load_json("pipeline_metadata.json")
+
+        loaded = sum(1 for x in [self.tda, self.verification, self.compression, self.concepts, self.metadata] if x)
+        console.print(f"[dim]Loaded {loaded}/5 ZITEP analysis files from {self.zitep_dir}[/dim]")
+
+    def display_circuit_summary(self):
+        """Display pre-inference circuit topology summary."""
+        # ── Header panel ──
+        betti_0 = self.tda["persistence_diagram"]["betti_0"] if self.tda else "?"
+        betti_1 = self.tda["persistence_diagram"]["betti_1"] if self.tda else "?"
+        num_bridges = len(self.tda.get("bridges", [])) if self.tda else 0
+        num_nodes = self.tda.get("num_nodes", 0) if self.tda else 0
+
+        verified = self.verification.get("verified_circuits", 0) if self.verification else 0
+        total_analyzed = self.verification.get("total_circuits_analyzed", 0) if self.verification else 0
+        lip_range = self.verification.get("overall_lipschitz_range", [0, 0]) if self.verification else [0, 0]
+
+        sparsity = self.compression.get("overall_sparsity", 0) if self.compression else 0
+        original_mb = self.compression.get("original_size_mb", 0) if self.compression else 0
+        pruned_mb = self.compression.get("pruned_size_mb", 0) if self.compression else 0
+
+        concepts_extracted = self.metadata.get("concepts_extracted", 0) if self.metadata else 0
+
+        summary_text = (
+            f"[bold cyan]Topological Invariants[/bold cyan]\n"
+            f"  β₀ (connected components): [yellow]{betti_0}[/yellow]\n"
+            f"  β₁ (loops/cycles):         [yellow]{betti_1}[/yellow]\n"
+            f"  Weight graph nodes:         {num_nodes}\n"
+            f"  Topological bridges:        {num_bridges}\n\n"
+            f"[bold cyan]Spectral Verification[/bold cyan]\n"
+            f"  Circuits analyzed:  {total_analyzed}\n"
+            f"  Verified stable:    [green]{verified}[/green]\n"
+            f"  Lipschitz range:    [{lip_range[0]:.2f}, {lip_range[1]:.2f}]\n\n"
+            f"[bold cyan]Model Compression[/bold cyan]\n"
+            f"  Sparsity:   {sparsity * 100:.1f}%\n"
+            f"  Original:   {original_mb:.1f} MB\n"
+            f"  Pruned:     {pruned_mb:.1f} MB\n"
+            f"  SVD concepts extracted: {concepts_extracted}"
+        )
+        console.print(Panel(summary_text, title="ZITEP Circuit Analysis", border_style="cyan"))
+
+        # ── Bridge details ──
+        if self.tda and self.tda.get("bridges"):
+            bridge_table = Table(
+                title="Topological Bridges — Verified Reasoning Pathways",
+                show_lines=True,
+                border_style="cyan",
+            )
+            bridge_table.add_column("ID", style="cyan", width=4)
+            bridge_table.add_column("Importance", style="yellow", width=12)
+            bridge_table.add_column("Layers", style="dim", width=10)
+            bridge_table.add_column("Global?", style="green", width=7)
+            bridge_table.add_column("Associated Concepts", style="white", width=50)
+            bridge_table.add_column("Stability", style="magenta", width=12)
+
+            # Build Lipschitz lookup from verification
+            lip_lookup = {}
+            if self.verification and "circuits" in self.verification:
+                for circ in self.verification["circuits"]:
+                    lip_lookup[circ["bridge_id"]] = circ
+
+            for bridge in self.tda["bridges"][:10]:  # Show top 10
+                bid = bridge["bridge_id"]
+                importance = f"{bridge['importance_score']:.1f}"
+                layers = f"{len(bridge['path_layers'])} layers"
+                is_global = "✓" if bridge.get("passes_through_global") else "—"
+                concepts = ", ".join(bridge.get("associated_concepts", [])[:8])
+
+                circ = lip_lookup.get(bid, {})
+                lip_k = circ.get("lipschitz_constant", None)
+                stable = circ.get("is_stable", None)
+                if lip_k is not None and lip_k < 1e15:
+                    stability = f"K={lip_k:.1f} {'✓' if stable else '✗'}"
+                elif lip_k is not None:
+                    stability = "K=∞ ✗"
+                else:
+                    stability = "—"
+
+                bridge_table.add_row(str(bid), importance, layers, is_global, concepts, stability)
+
+            console.print(bridge_table)
+
+    def classify_risk(self, entropy: float, top_prob: float) -> str:
+        """Classify hallucination risk for a single token."""
+        if entropy < 1.0 and top_prob > 0.7:
+            return "LOW"
+        elif entropy < 2.0 and top_prob > 0.3:
+            return "MEDIUM"
+        else:
+            return "HIGH"
+
+    def display_token_interpretation(self, per_token_metadata: list):
+        """Display per-token hallucination risk table."""
+        table = Table(
+            title="Per-Token Circuit Interpretation",
+            show_lines=False,
+            border_style="cyan",
+        )
+        table.add_column("Step", style="cyan", width=5)
+        table.add_column("Token", style="green", width=18)
+        table.add_column("Entropy", style="yellow", width=8)
+        table.add_column("Top Prob", style="magenta", width=8)
+        table.add_column("Risk", width=8)
+        table.add_column("Top Candidate", style="white", width=20)
+
+        risk_counts = {"LOW": 0, "MEDIUM": 0, "HIGH": 0}
+
+        for tm in per_token_metadata[:50]:  # Show first 50
+            top1 = tm["top5"][0] if tm.get("top5") else {"token": "—", "prob": 0}
+            top_prob = top1.get("prob", 0)
+            risk = self.classify_risk(tm["entropy"], top_prob)
+            risk_counts[risk] += 1
+
+            risk_style = {"LOW": "green", "MEDIUM": "yellow", "HIGH": "bold red"}[risk]
+
+            table.add_row(
+                str(tm["step"]),
+                tm["token"][:18],
+                f"{tm['entropy']:.3f}",
+                f"{top_prob:.3f}",
+                f"[{risk_style}]{risk}[/{risk_style}]",
+                top1["token"][:20],
+            )
+
+        console.print(table)
+
+        # Count for ALL tokens, not just displayed
+        for tm in per_token_metadata[50:]:
+            top1 = tm["top5"][0] if tm.get("top5") else {"prob": 0}
+            risk = self.classify_risk(tm["entropy"], top1.get("prob", 0))
+            risk_counts[risk] += 1
+
+        total = sum(risk_counts.values())
+        if total > 0:
+            entropies = [tm["entropy"] for tm in per_token_metadata]
+            max_ent_idx = int(np.argmax(entropies)) if entropies else 0
+            max_ent_token = per_token_metadata[max_ent_idx]["token"] if per_token_metadata else "—"
+
+            summary = (
+                f"[green]Low risk:    {risk_counts['LOW']:3d}/{total} ({risk_counts['LOW']/total*100:.0f}%)[/green]\n"
+                f"[yellow]Medium risk: {risk_counts['MEDIUM']:3d}/{total} ({risk_counts['MEDIUM']/total*100:.0f}%)[/yellow]\n"
+                f"[red]High risk:   {risk_counts['HIGH']:3d}/{total} ({risk_counts['HIGH']/total*100:.0f}%)[/red]\n\n"
+                f"Avg entropy: {np.mean(entropies):.4f}\n"
+                f"Max entropy: {max(entropies):.4f} (step {max_ent_idx}: {max_ent_token!r})"
+            )
+            console.print(Panel(summary, title="Hallucination Risk Summary", border_style="yellow"))
+
+    def get_concept_summary(self) -> str:
+        """Get a brief summary of the concept space."""
+        if not self.concepts:
+            return "No concept data available"
+
+        total = self.concepts.get("total_concepts_extracted", 0)
+        spikes = self.concepts.get("global_spike_count", 0)
+        layers = len(self.concepts.get("layers", []))
+        return f"{total} concepts across {layers} layers ({spikes} spikes detected)"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -576,6 +764,12 @@ def parse_args() -> argparse.Namespace:
         default="google/gemma-3-1b-it",
         help="Tokenizer source (default: google/gemma-3-1b-it)",
     )
+    parser.add_argument(
+        "--zitep-dir",
+        type=str,
+        default="./zitep_output",
+        help="Path to ZITEP output directory with analysis JSONs (default: ./zitep_output)",
+    )
     return parser.parse_args()
 
 
@@ -593,6 +787,14 @@ def main():
     if not args.prompt and not args.input_file:
         console.print("[red]Error: provide either --prompt or --input-file[/red]")
         sys.exit(1)
+
+    # ── Load ZITEP interpretation pipeline ──
+    interpreter = None
+    if os.path.isdir(args.zitep_dir):
+        interpreter = ZITEPInterpreter(args.zitep_dir)
+        interpreter.display_circuit_summary()
+    else:
+        console.print(f"[dim]No ZITEP analysis found at {args.zitep_dir} — skipping interpretation[/dim]")
 
     if args.mode == "hf":
         # HuggingFace-based inference
@@ -612,6 +814,15 @@ def main():
             console.print(f"\n[bold]Prompt:[/bold] {args.prompt}")
             console.print(Panel(result, title="Response", border_style="green"))
             console.print(f"[dim]Generated in {elapsed:.2f}s[/dim]")
+
+            # Concept summary for HF mode
+            if interpreter:
+                console.print(Panel(
+                    f"Concept space: {interpreter.get_concept_summary()}\n"
+                    f"[dim]Use --mode raw for per-token hallucination risk analysis[/dim]",
+                    title="ZITEP Interpretation",
+                    border_style="cyan",
+                ))
         else:
             console.print("[yellow]Batch mode not supported with --mode hf. Use --mode raw.[/yellow]")
 
@@ -636,29 +847,49 @@ def main():
             console.print(f"\n[bold]Prompt:[/bold] {args.prompt}")
             console.print(Panel(text, title="Response", border_style="green"))
 
-            # Show per-token entropy table
-            table = Table(title="Token Generation Details", show_lines=False)
-            table.add_column("Step", style="cyan", width=5)
-            table.add_column("Token", style="green", width=20)
-            table.add_column("Entropy", style="yellow", width=10)
-            table.add_column("Top Candidate", style="white", width=25)
-            table.add_column("Prob", style="magenta", width=8)
+            # ── ZITEP Interpretation: per-token analysis ──
+            if interpreter and metadata.get("per_token"):
+                interpreter.display_token_interpretation(metadata["per_token"])
+            else:
+                # Fallback: basic entropy table
+                table = Table(title="Token Generation Details", show_lines=False)
+                table.add_column("Step", style="cyan", width=5)
+                table.add_column("Token", style="green", width=20)
+                table.add_column("Entropy", style="yellow", width=10)
+                table.add_column("Top Candidate", style="white", width=25)
+                table.add_column("Prob", style="magenta", width=8)
 
-            for tm in metadata["per_token"][:30]:  # Show first 30 tokens
-                top1 = tm["top5"][0] if tm["top5"] else {"token": "—", "prob": 0}
-                table.add_row(
-                    str(tm["step"]),
-                    tm["token"],
-                    f"{tm['entropy']:.3f}",
-                    top1["token"],
-                    f"{top1['prob']:.3f}",
-                )
+                for tm in metadata["per_token"][:30]:
+                    top1 = tm["top5"][0] if tm["top5"] else {"token": "—", "prob": 0}
+                    table.add_row(
+                        str(tm["step"]),
+                        tm["token"],
+                        f"{tm['entropy']:.3f}",
+                        top1["token"],
+                        f"{top1['prob']:.3f}",
+                    )
+                console.print(table)
 
-            console.print(table)
             console.print(f"\n[dim]Generated {metadata['num_tokens_generated']} tokens in {elapsed:.2f}s | "
                           f"Avg entropy: {metadata['avg_entropy']}[/dim]")
 
-            # Save metadata
+            # Save enriched metadata with risk classification
+            if interpreter and metadata.get("per_token"):
+                for tm in metadata["per_token"]:
+                    top_prob = tm["top5"][0]["prob"] if tm.get("top5") else 0
+                    tm["hallucination_risk"] = interpreter.classify_risk(tm["entropy"], top_prob)
+                metadata["risk_summary"] = {
+                    "low": sum(1 for t in metadata["per_token"] if t.get("hallucination_risk") == "LOW"),
+                    "medium": sum(1 for t in metadata["per_token"] if t.get("hallucination_risk") == "MEDIUM"),
+                    "high": sum(1 for t in metadata["per_token"] if t.get("hallucination_risk") == "HIGH"),
+                }
+                metadata["zitep_analysis"] = {
+                    "concept_summary": interpreter.get_concept_summary(),
+                    "num_bridges": len(interpreter.tda.get("bridges", [])) if interpreter.tda else 0,
+                    "betti_0": interpreter.tda["persistence_diagram"]["betti_0"] if interpreter.tda else None,
+                    "betti_1": interpreter.tda["persistence_diagram"]["betti_1"] if interpreter.tda else None,
+                }
+
             meta_path = args.output_file
             with open(meta_path, "w", encoding="utf-8") as f:
                 json.dump(metadata, f, indent=2, ensure_ascii=False)
