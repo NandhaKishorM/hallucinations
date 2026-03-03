@@ -46,7 +46,7 @@ def get_gpu_memory_info(device: torch.device) -> Dict[str, float]:
 
     allocated = torch.cuda.memory_allocated(device) / (1024 ** 3)
     reserved = torch.cuda.memory_reserved(device) / (1024 ** 3)
-    total = torch.cuda.get_device_properties(device).total_mem / (1024 ** 3)
+    total = torch.cuda.get_device_properties(device).total_memory / (1024 ** 3)
     free = total - allocated
 
     return {
