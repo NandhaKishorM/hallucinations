@@ -642,18 +642,23 @@ def hf_inference(
         device_map=str(device),
     )
 
-    # Override with pruned weights
-    pruned_weights = load_pruned_weights(pruned_safetensors_path, device)
-    model_state = model.state_dict()
+    # Override with pruned weights if a specific safetensors file is provided
+    if pruned_safetensors_path and os.path.isfile(pruned_safetensors_path) and pruned_safetensors_path.endswith(".safetensors"):
+        console.print(f"[cyan]Loading pruned weights from {pruned_safetensors_path}[/cyan]")
+        pruned_weights = load_pruned_weights(pruned_safetensors_path, device)
+        model_state = model.state_dict()
 
-    replaced = 0
-    for name, tensor in pruned_weights.items():
-        if name in model_state:
-            model_state[name].copy_(tensor)
-            replaced += 1
+        replaced = 0
+        for name, tensor in pruned_weights.items():
+            if name in model_state:
+                model_state[name].copy_(tensor)
+                replaced += 1
 
-    model.load_state_dict(model_state)
-    console.print(f"[green]Replaced {replaced} weight tensors with pruned versions[/green]")
+        model.load_state_dict(model_state)
+        console.print(f"[green]Replaced {replaced} weight tensors with pruned versions[/green]")
+    else:
+        console.print(f"[yellow]Skipping weight override. Using base model from: {pruned_safetensors_path or tokenizer_source}[/yellow]")
+
 
     # Apply Gemma 3 instruct chat template
     chat = [{"role": "user", "content": prompt}]
