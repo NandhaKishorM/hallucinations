@@ -510,11 +510,10 @@ def hf_inference(
     temperature: float = 0.1,
     top_k: int = 50,
     tokenizer_source: str = "google/gemma-3-1b-it",
-) -> str:
+) -> Tuple[str, dict]:
     """
     Load the pruned weights into a HuggingFace Gemma model and generate text.
-    This works because the pruned safetensors retains the full architecture
-    shape — the pruned parameters are simply zeroed out.
+    Returns (generated_text, per_token_metadata) for the interpretation pipeline.
     """
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -544,19 +543,65 @@ def hf_inference(
 
     # Tokenize
     inputs = tokenizer(prompt, return_tensors="pt").to(device)
+    input_len = inputs["input_ids"].shape[1]
 
-    # Generate
+    # Generate with scores for per-token analysis
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
-            temperature=temperature,
+            temperature=max(temperature, 0.01),  # Avoid div-by-zero
             top_k=top_k,
             do_sample=temperature > 0,
+            output_scores=True,
+            return_dict_in_generate=True,
         )
 
-    response = tokenizer.decode(outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
-    return response
+    # Decode response
+    generated_ids = outputs.sequences[0][input_len:]
+    response = tokenizer.decode(generated_ids, skip_special_tokens=True)
+
+    # Build per-token metadata from scores
+    per_token = []
+    for step_idx, score in enumerate(outputs.scores):
+        logits = score[0]  # (vocab_size,) for batch_size=1
+        probs = F.softmax(logits.float(), dim=-1)
+
+        # Entropy
+        log_probs = torch.log2(probs + 1e-12)
+        entropy = -(probs * log_probs).sum().item()
+
+        # Top-5
+        top5_probs, top5_ids = torch.topk(probs, min(5, probs.shape[0]))
+        top5_tokens = tokenizer.convert_ids_to_tokens(top5_ids.tolist())
+
+        # Actual generated token
+        token_id = generated_ids[step_idx].item()
+        token_str = tokenizer.convert_ids_to_tokens([token_id])[0]
+
+        per_token.append({
+            "step": step_idx,
+            "token_id": token_id,
+            "token": token_str,
+            "entropy": round(entropy, 4),
+            "top5": [
+                {"token": t, "token_id": int(tid), "prob": round(float(p), 6)}
+                for t, tid, p in zip(top5_tokens, top5_ids.tolist(), top5_probs.tolist())
+            ],
+        })
+
+    # Aggregate metadata
+    all_entropies = [t["entropy"] for t in per_token]
+    metadata = {
+        "prompt": prompt,
+        "response": response,
+        "num_tokens_generated": len(per_token),
+        "avg_entropy": round(float(np.mean(all_entropies)) if all_entropies else 0.0, 4),
+        "max_entropy": round(float(max(all_entropies)) if all_entropies else 0.0, 4),
+        "per_token": per_token,
+    }
+
+    return response, metadata
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -800,7 +845,7 @@ def main():
         # HuggingFace-based inference
         if args.prompt:
             start = time.perf_counter()
-            result = hf_inference(
+            text, metadata = hf_inference(
                 prompt=args.prompt,
                 pruned_safetensors_path=args.model_path,
                 device=device,
@@ -812,17 +857,36 @@ def main():
             elapsed = time.perf_counter() - start
 
             console.print(f"\n[bold]Prompt:[/bold] {args.prompt}")
-            console.print(Panel(result, title="Response", border_style="green"))
-            console.print(f"[dim]Generated in {elapsed:.2f}s[/dim]")
+            console.print(Panel(text, title="Response", border_style="green"))
 
-            # Concept summary for HF mode
-            if interpreter:
-                console.print(Panel(
-                    f"Concept space: {interpreter.get_concept_summary()}\n"
-                    f"[dim]Use --mode raw for per-token hallucination risk analysis[/dim]",
-                    title="ZITEP Interpretation",
-                    border_style="cyan",
-                ))
+            # ── ZITEP Interpretation: per-token analysis ──
+            if interpreter and metadata.get("per_token"):
+                interpreter.display_token_interpretation(metadata["per_token"])
+
+            console.print(f"\n[dim]Generated {metadata['num_tokens_generated']} tokens in {elapsed:.2f}s | "
+                          f"Avg entropy: {metadata['avg_entropy']}[/dim]")
+
+            # Save enriched metadata with risk classification
+            if interpreter and metadata.get("per_token"):
+                for tm in metadata["per_token"]:
+                    top_prob = tm["top5"][0]["prob"] if tm.get("top5") else 0
+                    tm["hallucination_risk"] = interpreter.classify_risk(tm["entropy"], top_prob)
+                metadata["risk_summary"] = {
+                    "low": sum(1 for t in metadata["per_token"] if t.get("hallucination_risk") == "LOW"),
+                    "medium": sum(1 for t in metadata["per_token"] if t.get("hallucination_risk") == "MEDIUM"),
+                    "high": sum(1 for t in metadata["per_token"] if t.get("hallucination_risk") == "HIGH"),
+                }
+                metadata["zitep_analysis"] = {
+                    "concept_summary": interpreter.get_concept_summary(),
+                    "num_bridges": len(interpreter.tda.get("bridges", [])) if interpreter.tda else 0,
+                    "betti_0": interpreter.tda["persistence_diagram"]["betti_0"] if interpreter.tda else None,
+                    "betti_1": interpreter.tda["persistence_diagram"]["betti_1"] if interpreter.tda else None,
+                }
+
+            meta_path = args.output_file
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(metadata, f, indent=2, ensure_ascii=False)
+            console.print(f"[dim]Detailed metadata saved to: {meta_path}[/dim]")
         else:
             console.print("[yellow]Batch mode not supported with --mode hf. Use --mode raw.[/yellow]")
 
