@@ -48,7 +48,7 @@ def get_representations(model_name: str, subject: str, target_object: str, targe
     # Forward pass with hooks
     intermediate_state = None
     
-    def hook_fn(module, args, output):
+    def hook_fn(module, args):
         nonlocal intermediate_state
         # args[0] is the input to the MLP block.
         # But we specifically want the intermediate activation before down_proj.
