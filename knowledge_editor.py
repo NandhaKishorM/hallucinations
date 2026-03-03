@@ -31,31 +31,28 @@ def get_representations(model_name: str, subject: str, target_object: str, targe
         device_map=str(device)
     )
     
-    # 1. Get Target Object Embedding vector (this is what we want the model to output)
+    # 1. Target Vector (v)
+    # ROME targets the intermediate MLP output that maps to the desired token embedding.
     target_tokens = tokenizer.encode(target_object, add_special_tokens=False)
     if not target_tokens:
         raise ValueError(f"Could not tokenize '{target_object}'")
     
     target_token_id = target_tokens[0]
-    target_vec = model.model.embed_tokens.weight[target_token_id].detach().float()
     
-    # 2. Get Subject Intermediate State vector (this is the input condition that triggers the fact)
+    # We want the output of down_proj to directly point to the target token embedding.
+    # We can approximate this by pointing directly at the target token's embedding vector
+    # (lm_head is tied to embed_tokens).
+    v_target = model.model.embed_tokens.weight[target_token_id].detach().float()
+    
+    # 2. Key Vector (k) - the intermediate state triggered by the subject
     inputs = tokenizer(subject, return_tensors="pt").to(device)
     
-    # We need the output of the MLP's up_proj/gate_proj (the input to down_proj) 
-    # for the last token of the subject at the target layer.
-    
-    # Forward pass with hooks
     intermediate_state = None
     
     def hook_fn(module, args):
         nonlocal intermediate_state
-        # args[0] is the input to the MLP block.
-        # But we specifically want the intermediate activation before down_proj.
-        # So we hook down_proj itself.
-        # args[0] for down_proj is the gated intermediate state of shape [batch, seq_len, intermediate_size]
-        # We grab the vector for the last token in the sequence.
         seq_input = args[0].detach().float()
+        # Grab the activation for the last token in the subject
         intermediate_state = seq_input[0, -1, :]
     
     hook = model.model.layers[target_layer].mlp.down_proj.register_forward_pre_hook(hook_fn)
@@ -67,10 +64,11 @@ def get_representations(model_name: str, subject: str, target_object: str, targe
     del model
     torch.cuda.empty_cache()
     
-    if intermediate_state is None:
+    k_subject = intermediate_state
+    if k_subject is None:
         raise RuntimeError(f"Failed to capture intermediate state at layer {target_layer}")
         
-    return target_vec, intermediate_state
+    return v_target, k_subject
 
 
 def edit_model_knowledge(
@@ -79,12 +77,12 @@ def edit_model_knowledge(
     target_layer: int,
     subject: str,
     target_object: str,
-    boost_factor: float = 1.0,
+    boost_factor: float = 1.0,  # Scaler for the injection strength
     device: str = "cuda"
 ):
     """
-    Surgically inject a fact using a rank-one update on the pruned weights.
-    W_new = W_old + boost_factor * (v_target * k_subject^T) / ||k_subject||^2
+    Surgically inject a fact using true ROME rank-one update on the pruned weights.
+    W_new = W_old + lambda * (v - W_old k) * k^T / ||k||^2
     """
     device = torch.device(device)
     model_name = "google/gemma-3-1b-it"
@@ -92,18 +90,13 @@ def edit_model_knowledge(
     console.print(f"[cyan]Computing representations for '{subject}' -> '{target_object}'...[/cyan]")
     v_target, k_subject = get_representations(model_name, subject, target_object, target_layer, device)
     
-    # Normalize the vectors
-    v_target_norm = F.normalize(v_target, dim=0)
-    k_subject_norm = F.normalize(k_subject, dim=0)
-    
     console.print(f"Loading pruned weights from {pruned_model_path}...")
     weights = {}
     with safe_open(pruned_model_path, framework="pt", device="cpu") as f:
         for key in f.keys():
             weights[key] = f.get_tensor(key)
             
-    # Target weight matrix to update: W_down is usually [hidden_size, intermediate_size]
-    # In HuggingFace linear layers, weight shape is [out_features, in_features]
+    # Target weight matrix to update: W_down shape [hidden_size, intermediate_size]
     target_key = f"model.layers.{target_layer}.mlp.down_proj.weight"
     if target_key not in weights:
         console.print(f"[red]Could not find {target_key} in model weights[/red]")
@@ -111,17 +104,26 @@ def edit_model_knowledge(
         
     W_down = weights[target_key].to(device).float()
     
-    console.print(f"[yellow]Applying rank-one update to {target_key}...[/yellow]")
+    console.print(f"[yellow]Applying strict ROME rank-one update to {target_key}...[/yellow]")
     
-    # Calculate the scale to ensure the injected memory influences without dominating catastrophically.
-    target_scale = torch.norm(W_down) * boost_factor * 0.001  # significantly gentler scale
+    # ROME Update Rule:
+    # We want W_new * k = v
+    # W_new = W_old + (v - W_old * k) @ (k^T / ||k||^2)
     
-    # Rank-1 Update: W_new = W_old + lambda * v * k^T
-    # v_target_norm is [hidden_size]
-    # k_subject_norm is [intermediate_size]
-    # Update shape is [hidden_size, intermediate_size], exactly matching W_down
+    # In practice we scale v massively to overcome subsequent layers, applying boost_factor
+    v_target_scaled = v_target * boost_factor * 10.0
     
-    update_matrix = target_scale * torch.outer(v_target_norm, k_subject_norm)
+    W_k = torch.matmul(W_down, k_subject)  # [hidden_size]
+    error_vector = v_target_scaled - W_k   # [hidden_size]
+    
+    # Denominator
+    k_norm_sq = torch.dot(k_subject, k_subject)
+    
+    # The rank-1 update matrix
+    # error_vector is [hidden_size], k_subject is [intermediate_size]
+    # update = error_vector @ k_subject.T / ||k||^2
+    update_matrix = torch.outer(error_vector, k_subject) / k_norm_sq
+    
     W_new = W_down + update_matrix
     
     weights[target_key] = W_new.to(torch.bfloat16).cpu()
