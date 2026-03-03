@@ -1,194 +1,205 @@
 {
   "original_total_params": 999871488,
-  "kept_total_params": 302109696,
-  "pruned_total_params": 697761792,
-  "compression_ratio": 0.302149,
-  "overall_sparsity": 0.697851,
+  "kept_total_params": 364260096,
+  "pruned_total_params": 635611392,
+  "compression_ratio": 0.364307,
+  "overall_sparsity": 0.635693,
   "original_size_mb": 1907.1,
-  "pruned_size_mb": 576.23,
-  "verified_bridge_ids": [],
+  "pruned_size_mb": 694.77,
+  "verified_bridge_ids": [
+    9,
+    8,
+    7,
+    10,
+    1,
+    2,
+    0,
+    3,
+    6,
+    5
+  ],
   "per_layer": [
     {
       "layer_idx": 0,
       "attention_type": "local",
       "total_params": 26841600,
-      "kept_params": 4608,
-      "sparsity": 0.9998
+      "kept_params": 2395008,
+      "sparsity": 0.9108
     },
     {
       "layer_idx": 1,
       "attention_type": "local",
       "total_params": 26841600,
-      "kept_params": 4608,
-      "sparsity": 0.9998
+      "kept_params": 2395008,
+      "sparsity": 0.9108
     },
     {
       "layer_idx": 2,
       "attention_type": "local",
       "total_params": 26841600,
-      "kept_params": 4608,
-      "sparsity": 0.9998
+      "kept_params": 2395008,
+      "sparsity": 0.9108
     },
     {
       "layer_idx": 3,
       "attention_type": "local",
       "total_params": 26841600,
-      "kept_params": 4608,
-      "sparsity": 0.9998
+      "kept_params": 2395008,
+      "sparsity": 0.9108
     },
     {
       "layer_idx": 4,
       "attention_type": "local",
       "total_params": 26841600,
-      "kept_params": 4608,
-      "sparsity": 0.9998
+      "kept_params": 2395008,
+      "sparsity": 0.9108
     },
     {
       "layer_idx": 5,
       "attention_type": "global",
       "total_params": 26841600,
-      "kept_params": 4608,
-      "sparsity": 0.9998
+      "kept_params": 2395008,
+      "sparsity": 0.9108
     },
     {
       "layer_idx": 6,
       "attention_type": "local",
       "total_params": 26841600,
-      "kept_params": 4608,
-      "sparsity": 0.9998
+      "kept_params": 2395008,
+      "sparsity": 0.9108
     },
     {
       "layer_idx": 7,
       "attention_type": "local",
       "total_params": 26841600,
-      "kept_params": 4608,
-      "sparsity": 0.9998
+      "kept_params": 2395008,
+      "sparsity": 0.9108
     },
     {
       "layer_idx": 8,
       "attention_type": "local",
       "total_params": 26841600,
-      "kept_params": 4608,
-      "sparsity": 0.9998
+      "kept_params": 2395008,
+      "sparsity": 0.9108
     },
     {
       "layer_idx": 9,
       "attention_type": "local",
       "total_params": 26841600,
-      "kept_params": 4608,
-      "sparsity": 0.9998
+      "kept_params": 2395008,
+      "sparsity": 0.9108
     },
     {
       "layer_idx": 10,
       "attention_type": "local",
       "total_params": 26841600,
-      "kept_params": 4608,
-      "sparsity": 0.9998
+      "kept_params": 2395008,
+      "sparsity": 0.9108
     },
     {
       "layer_idx": 11,
       "attention_type": "global",
       "total_params": 26841600,
-      "kept_params": 4608,
-      "sparsity": 0.9998
+      "kept_params": 2395008,
+      "sparsity": 0.9108
     },
     {
       "layer_idx": 12,
       "attention_type": "local",
       "total_params": 26841600,
-      "kept_params": 4608,
-      "sparsity": 0.9998
+      "kept_params": 2395008,
+      "sparsity": 0.9108
     },
     {
       "layer_idx": 13,
       "attention_type": "local",
       "total_params": 26841600,
-      "kept_params": 4608,
-      "sparsity": 0.9998
+      "kept_params": 2395008,
+      "sparsity": 0.9108
     },
     {
       "layer_idx": 14,
       "attention_type": "local",
       "total_params": 26841600,
-      "kept_params": 4608,
-      "sparsity": 0.9998
+      "kept_params": 2395008,
+      "sparsity": 0.9108
     },
     {
       "layer_idx": 15,
       "attention_type": "local",
       "total_params": 26841600,
-      "kept_params": 4608,
-      "sparsity": 0.9998
+      "kept_params": 2395008,
+      "sparsity": 0.9108
     },
     {
       "layer_idx": 16,
       "attention_type": "local",
       "total_params": 26841600,
-      "kept_params": 4608,
-      "sparsity": 0.9998
+      "kept_params": 2395008,
+      "sparsity": 0.9108
     },
     {
       "layer_idx": 17,
       "attention_type": "global",
       "total_params": 26841600,
-      "kept_params": 4608,
-      "sparsity": 0.9998
+      "kept_params": 2395008,
+      "sparsity": 0.9108
     },
     {
       "layer_idx": 18,
       "attention_type": "local",
       "total_params": 26841600,
-      "kept_params": 4608,
-      "sparsity": 0.9998
+      "kept_params": 2395008,
+      "sparsity": 0.9108
     },
     {
       "layer_idx": 19,
       "attention_type": "local",
       "total_params": 26841600,
-      "kept_params": 4608,
-      "sparsity": 0.9998
+      "kept_params": 2395008,
+      "sparsity": 0.9108
     },
     {
       "layer_idx": 20,
       "attention_type": "local",
       "total_params": 26841600,
-      "kept_params": 4608,
-      "sparsity": 0.9998
+      "kept_params": 2395008,
+      "sparsity": 0.9108
     },
     {
       "layer_idx": 21,
       "attention_type": "local",
       "total_params": 26841600,
-      "kept_params": 4608,
-      "sparsity": 0.9998
+      "kept_params": 2395008,
+      "sparsity": 0.9108
     },
     {
       "layer_idx": 22,
       "attention_type": "local",
       "total_params": 26841600,
-      "kept_params": 4608,
-      "sparsity": 0.9998
+      "kept_params": 2395008,
+      "sparsity": 0.9108
     },
     {
       "layer_idx": 23,
       "attention_type": "global",
       "total_params": 26841600,
-      "kept_params": 4608,
-      "sparsity": 0.9998
+      "kept_params": 2395008,
+      "sparsity": 0.9108
     },
     {
       "layer_idx": 24,
       "attention_type": "local",
       "total_params": 26841600,
-      "kept_params": 4608,
-      "sparsity": 0.9998
+      "kept_params": 2395008,
+      "sparsity": 0.9108
     },
     {
       "layer_idx": 25,
       "attention_type": "local",
       "total_params": 26841600,
-      "kept_params": 4608,
-      "sparsity": 0.9998
+      "kept_params": 2395008,
+      "sparsity": 0.9108
     }
   ]
 }

@@ -448,16 +448,32 @@ def extract_topological_bridges(
             if node.attention_type == "global":
                 passes_global = True
 
-        # Associate concepts from SVD — use top concepts regardless of spike status
+        # Associate concepts from SVD — use bridge-specific concepts
+        # Each bridge picks concepts based on its specific nodes' component types
         associated_concepts = []
         for nid in path:
             node = node_by_id[nid]
             if 0 <= node.layer_idx < len(concept_table.layers):
                 layer_dec = concept_table.layers[node.layer_idx]
-                for mat_dec in layer_dec.matrices.values():
-                    for concept in mat_dec.concepts[:3]:
-                        # Always include top concepts (not just spikes)
-                        associated_concepts.extend(concept.input_tokens[:2])
+                if node.component_type == "attention_head":
+                    # Use head index to offset into concept list for diversity
+                    for mat_name, mat_dec in layer_dec.matrices.items():
+                        if mat_name in ("gate_proj", "up_proj"):
+                            continue  # Skip MLP matrices for attention nodes
+                        rank_offset = node.component_idx % max(1, len(mat_dec.concepts))
+                        concept = mat_dec.concepts[rank_offset] if mat_dec.concepts else None
+                        if concept:
+                            associated_concepts.append(concept.input_tokens[0])
+                        break
+                elif node.component_type == "mlp_neuron":
+                    # Use bridge_id to offset for MLP diversity
+                    for mat_name in ("gate_proj", "down_proj"):
+                        mat_dec = layer_dec.matrices.get(mat_name)
+                        if mat_dec and mat_dec.concepts:
+                            rank_offset = bridge_id % len(mat_dec.concepts)
+                            concept = mat_dec.concepts[rank_offset]
+                            associated_concepts.append(concept.input_tokens[0])
+                            break
 
         # Deduplicate concepts
         seen = set()

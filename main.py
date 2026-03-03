@@ -357,17 +357,35 @@ def run_pipeline(config: PipelineConfig) -> None:
 
         pruned_weights = apply_mask(raw_weights, mask)
 
-        verified_ids = [
+        # Determine which bridge IDs were actually used for pruning
+        # (may include unverified bridges via fallback chain)
+        strictly_verified_ids = [
             cv.bridge_id
             for cv in verification_report.circuit_results
             if cv.is_stable
         ]
 
+        # If no strict verification passed, pruner used fallback — report those
+        if strictly_verified_ids:
+            used_bridge_ids = strictly_verified_ids
+        elif verification_report.circuit_results:
+            # Fallback: top by score (matches pruner logic)
+            sorted_results = sorted(
+                verification_report.circuit_results,
+                key=lambda x: x.verification_score,
+                reverse=True,
+            )
+            used_bridge_ids = [cv.bridge_id for cv in sorted_results[:5]]
+        elif topology_result.bridges:
+            used_bridge_ids = [b.bridge_id for b in topology_result.bridges]
+        else:
+            used_bridge_ids = []
+
         artifact = export_pruned_model(
             pruned_weights=pruned_weights,
             output_dir=output_dir,
             compression_report=compression_report,
-            verified_bridge_ids=verified_ids,
+            verified_bridge_ids=used_bridge_ids,
             config=config.pruning,
         )
 

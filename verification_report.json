@@ -1,10 +1,13 @@
 {
-  "total_circuits_analyzed": 0,
+  "total_circuits_analyzed": 10,
   "verified_circuits": 0,
-  "failed_circuits": 0,
+  "failed_circuits": 10,
   "overall_lipschitz_range": [
-    0.0,
-    0.0
+    5.184705528587072e+21,
+    5.184705528587072e+21
   ],
-  "circuits": []
-}
+  "circuits": [
+    {
+      "bridge_id": 9,
+      "lipschitz_constant": 5.184705528587072e+21,
+      "is_stable": 

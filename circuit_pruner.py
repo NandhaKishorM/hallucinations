@@ -165,10 +165,11 @@ def _compute_layer_importance_mask(
                         mask = torch.ones_like(tensor)
                     else:
                         for neuron_idx in active_neurons:
-                            # Keep a window around the active neuron
-                            window = max(1, arch.intermediate_size // (arch.intermediate_size // 8))
-                            start = max(0, neuron_idx - window)
-                            end = min(tensor.shape[0], neuron_idx + window + 1)
+                            # Keep a wide window around each active neuron
+                            # Use 25% of intermediate_size per neuron to avoid over-pruning
+                            window = max(64, arch.intermediate_size // 4)
+                            start = max(0, neuron_idx * (arch.intermediate_size // len(active_neurons)) - window // 2)
+                            end = min(tensor.shape[0], start + window)
                             mask[start:end, :] = 1.0
 
                 elif mat_name == "down_proj":
@@ -176,9 +177,9 @@ def _compute_layer_importance_mask(
                         mask = torch.ones_like(tensor)
                     else:
                         for neuron_idx in active_neurons:
-                            window = max(1, arch.intermediate_size // (arch.intermediate_size // 8))
-                            start = max(0, neuron_idx - window)
-                            end = min(tensor.shape[1], neuron_idx + window + 1)
+                            window = max(64, arch.intermediate_size // 4)
+                            start = max(0, neuron_idx * (arch.intermediate_size // len(active_neurons)) - window // 2)
+                            end = min(tensor.shape[1], start + window)
                             mask[:, start:end] = 1.0
 
                 elif "layernorm" in mat_name:
