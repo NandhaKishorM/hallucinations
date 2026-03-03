@@ -541,8 +541,12 @@ def hf_inference(
     model.load_state_dict(model_state)
     console.print(f"[green]Replaced {replaced} weight tensors with pruned versions[/green]")
 
-    # Tokenize
-    inputs = tokenizer(prompt, return_tensors="pt").to(device)
+    # Apply Gemma 3 instruct chat template
+    chat = [{"role": "user", "content": prompt}]
+    formatted_prompt = tokenizer.apply_chat_template(
+        chat, tokenize=False, add_generation_prompt=True,
+    )
+    inputs = tokenizer(formatted_prompt, return_tensors="pt").to(device)
     input_len = inputs["input_ids"].shape[1]
 
     # Generate with scores for per-token analysis
