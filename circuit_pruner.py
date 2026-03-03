@@ -113,6 +113,17 @@ def _compute_layer_importance_mask(
         "post_feedforward_layernorm": layer_weights.post_feedforward_layernorm,
     }
 
+    # Helper: create a magnitude-based floor mask (keeps top fraction of weights)
+    def _magnitude_floor_mask(tensor: torch.Tensor, keep_fraction: float) -> torch.Tensor:
+        """Keep at least the top `keep_fraction` of weights by magnitude."""
+        abs_w = tensor.abs().float().flatten()
+        threshold = torch.quantile(abs_w, 1.0 - keep_fraction)
+        return (tensor.abs() >= threshold).float()
+
+    # Minimum fraction of weights to keep in any layer to prevent signal collapse.
+    # Without this, RMS norm inflates near-zero outputs and destroys the residual stream.
+    MIN_KEEP_FRACTION = 0.30
+
     if layer_in_verified_bridge:
         if config.structured_pruning:
             # Structured pruning: identify which heads/neurons are active in the bridge
@@ -131,95 +142,76 @@ def _compute_layer_importance_mask(
                             active_neurons.add(node.component_idx)
 
             for mat_name, tensor in matrix_map.items():
-                mask = torch.zeros_like(tensor)
+                if "layernorm" in mat_name:
+                    masks[mat_name] = torch.ones_like(tensor)
+                    continue
+
+                # Start with the structured bridge mask
+                struct_mask = torch.zeros_like(tensor)
 
                 if mat_name in ("q_proj", "k_proj", "v_proj", "o_proj"):
-                    # Keep only active attention heads
                     head_dim = arch.head_dim
                     if not active_heads:
-                        # If no specific heads identified, keep all (this layer is in a bridge)
-                        mask = torch.ones_like(tensor)
+                        struct_mask = torch.ones_like(tensor)
                     else:
                         for head_idx in active_heads:
                             if mat_name == "o_proj":
-                                # o_proj: (hidden_size, num_heads * head_dim)
                                 start = head_idx * head_dim
                                 end = min(start + head_dim, tensor.shape[1])
-                                mask[:, start:end] = 1.0
+                                struct_mask[:, start:end] = 1.0
                             else:
-                                # q/k/v_proj: (num_heads * head_dim, hidden_size)
                                 num_kv = arch.num_key_value_heads
                                 if mat_name in ("k_proj", "v_proj"):
-                                    # KV heads map from query heads via GQA grouping
                                     kv_idx = head_idx % num_kv
                                     start = kv_idx * head_dim
                                     end = min(start + head_dim, tensor.shape[0])
                                 else:
                                     start = head_idx * head_dim
                                     end = min(start + head_dim, tensor.shape[0])
-                                mask[start:end, :] = 1.0
+                                struct_mask[start:end, :] = 1.0
 
                 elif mat_name in ("gate_proj", "up_proj"):
-                    # Keep neurons near the active indices
                     if not active_neurons:
-                        mask = torch.ones_like(tensor)
+                        struct_mask = torch.ones_like(tensor)
                     else:
                         for neuron_idx in active_neurons:
-                            # Keep a wide window around each active neuron
-                            # Use 25% of intermediate_size per neuron to avoid over-pruning
                             window = max(64, arch.intermediate_size // 4)
                             start = max(0, neuron_idx * (arch.intermediate_size // len(active_neurons)) - window // 2)
                             end = min(tensor.shape[0], start + window)
-                            mask[start:end, :] = 1.0
+                            struct_mask[start:end, :] = 1.0
 
                 elif mat_name == "down_proj":
                     if not active_neurons:
-                        mask = torch.ones_like(tensor)
+                        struct_mask = torch.ones_like(tensor)
                     else:
                         for neuron_idx in active_neurons:
                             window = max(64, arch.intermediate_size // 4)
                             start = max(0, neuron_idx * (arch.intermediate_size // len(active_neurons)) - window // 2)
                             end = min(tensor.shape[1], start + window)
-                            mask[:, start:end] = 1.0
+                            struct_mask[:, start:end] = 1.0
 
-                elif "layernorm" in mat_name:
-                    # Always keep layernorms for stability
-                    mask = torch.ones_like(tensor)
-
-                masks[mat_name] = mask
+                # Union with magnitude floor so no matrix is ever fully zeroed
+                mag_floor = _magnitude_floor_mask(tensor, MIN_KEEP_FRACTION)
+                masks[mat_name] = torch.clamp(struct_mask + mag_floor, max=1.0)
         else:
             # Unstructured pruning: magnitude-based within the layer
             for mat_name, tensor in matrix_map.items():
                 if "layernorm" in mat_name:
                     masks[mat_name] = torch.ones_like(tensor)
                 else:
-                    abs_weights = tensor.abs()
-                    threshold = torch.quantile(
-                        abs_weights.float().flatten(),
-                        1.0 - (config.importance_percentile / 100.0),
-                    )
-                    masks[mat_name] = (abs_weights >= threshold).float()
+                    keep_frac = max(MIN_KEEP_FRACTION, config.importance_percentile / 100.0)
+                    masks[mat_name] = _magnitude_floor_mask(tensor, keep_frac)
     else:
-        # Layer not in any verified bridge
-        if use_magnitude_fallback:
-            # Magnitude-based pruning: keep top percentile of weights by absolute value
-            for mat_name, tensor in matrix_map.items():
-                if "layernorm" in mat_name:
-                    masks[mat_name] = torch.ones_like(tensor)
-                else:
-                    abs_weights = tensor.abs()
-                    threshold = torch.quantile(
-                        abs_weights.float().flatten(),
-                        1.0 - (config.importance_percentile / 100.0),
-                    )
-                    masks[mat_name] = (abs_weights >= threshold).float()
-        else:
-            # Bridge-based: prune this layer entirely (keep only layernorms)
-            for mat_name, tensor in matrix_map.items():
-                if "layernorm" in mat_name:
-                    masks[mat_name] = torch.ones_like(tensor)
-                else:
-                    masks[mat_name] = torch.zeros_like(tensor)
+        # Layer not in any verified bridge — keep top weights by magnitude
+        # NEVER fully zero a layer: that causes RMS norm to inflate noise
+        for mat_name, tensor in matrix_map.items():
+            if "layernorm" in mat_name:
+                masks[mat_name] = torch.ones_like(tensor)
+            else:
+                keep_frac = MIN_KEEP_FRACTION if not use_magnitude_fallback else max(
+                    MIN_KEEP_FRACTION, config.importance_percentile / 100.0
+                )
+                masks[mat_name] = _magnitude_floor_mask(tensor, keep_frac)
 
     return masks
 
