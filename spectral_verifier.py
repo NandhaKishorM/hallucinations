@@ -301,7 +301,18 @@ def run_smt_verification(
     We encode the circuit as a system of linear constraints and check if there
     exists any input that could cause the output to deviate from the target.
     """
-    import z3
+    try:
+        import z3
+    except ImportError:
+        logger.warning("Z3 solver not installed — skipping SMT verification. "
+                       "Install with: pip install z3-solver")
+        return SMTVerificationResult(
+            verified=False,
+            concept_a=bridge.associated_concepts[0] if bridge.associated_concepts else "unknown",
+            concept_b=bridge.associated_concepts[1] if len(bridge.associated_concepts) > 1 else "unknown",
+            time_seconds=0.0,
+            counterexample="Z3 not installed — SMT verification skipped",
+        )
 
     start_time = time.time()
 
