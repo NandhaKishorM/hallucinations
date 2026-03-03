@@ -122,7 +122,8 @@ def _compute_layer_importance_mask(
 
     # Minimum fraction of weights to keep in any layer to prevent signal collapse.
     # Without this, RMS norm inflates near-zero outputs and destroys the residual stream.
-    MIN_KEEP_FRACTION = 0.30
+    # For a 1B model, anything below 50% per-layer causes coherence collapse.
+    MIN_KEEP_FRACTION = 0.70
 
     if layer_in_verified_bridge:
         if config.structured_pruning:
@@ -203,14 +204,13 @@ def _compute_layer_importance_mask(
                     masks[mat_name] = _magnitude_floor_mask(tensor, keep_frac)
     else:
         # Layer not in any verified bridge — keep top weights by magnitude
-        # NEVER fully zero a layer: that causes RMS norm to inflate noise
+        # Use gentler pruning than bridge layers to avoid destroying signal propagation
+        NON_BRIDGE_KEEP = 0.50
         for mat_name, tensor in matrix_map.items():
             if "layernorm" in mat_name:
                 masks[mat_name] = torch.ones_like(tensor)
             else:
-                keep_frac = MIN_KEEP_FRACTION if not use_magnitude_fallback else max(
-                    MIN_KEEP_FRACTION, config.importance_percentile / 100.0
-                )
+                keep_frac = max(NON_BRIDGE_KEEP, config.importance_percentile / 100.0) if use_magnitude_fallback else NON_BRIDGE_KEEP
                 masks[mat_name] = _magnitude_floor_mask(tensor, keep_frac)
 
     return masks

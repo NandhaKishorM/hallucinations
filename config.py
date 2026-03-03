@@ -153,7 +153,9 @@ class PruningConfig:
     importance_percentile: float = 85.0
 
     # Whether to apply structured pruning (entire heads/neurons) vs unstructured
-    structured_pruning: bool = True
+    # NOTE: Structured pruning is too aggressive for 1B models — zeroing entire
+    # heads destroys coherence even at low sparsity. Use unstructured (magnitude-based).
+    structured_pruning: bool = False
 
     # Output formats
     export_safetensors: bool = True
