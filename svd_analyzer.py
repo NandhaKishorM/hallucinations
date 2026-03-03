@@ -404,6 +404,22 @@ def decompose_all_layers(
     return concept_table
 
 
+class _NumpyEncoder(json.JSONEncoder):
+    """JSON encoder that handles numpy/torch types."""
+    def default(self, obj):
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        if isinstance(obj, (np.floating,)):
+            return float(obj)
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, torch.Tensor):
+            return obj.cpu().tolist()
+        return super().default(obj)
+
+
 def save_concept_table(concept_table: ConceptTable, output_dir: str) -> str:
     """
     Save the concept table to a JSON file for inspection and downstream use.
@@ -414,40 +430,43 @@ def save_concept_table(concept_table: ConceptTable, output_dir: str) -> str:
     # Convert to serializable format
     data = {
         "model_name": concept_table.model_name,
-        "num_layers": concept_table.num_layers,
-        "global_spike_count": concept_table.global_spike_count,
-        "total_concepts_extracted": concept_table.total_concepts_extracted,
-        "layer_importance_scores": concept_table.get_layer_importance_scores(),
+        "num_layers": int(concept_table.num_layers),
+        "global_spike_count": int(concept_table.global_spike_count),
+        "total_concepts_extracted": int(concept_table.total_concepts_extracted),
+        "layer_importance_scores": {
+            int(k): float(v)
+            for k, v in concept_table.get_layer_importance_scores().items()
+        },
         "layers": [],
     }
 
     for layer_dec in concept_table.layers:
         layer_data = {
-            "layer_idx": layer_dec.layer_idx,
+            "layer_idx": int(layer_dec.layer_idx),
             "attention_type": layer_dec.attention_type,
             "matrices": {},
         }
 
         for mat_name, mat_dec in layer_dec.matrices.items():
             mat_data = {
-                "original_shape": list(mat_dec.original_shape),
-                "spectral_norm": mat_dec.spectral_norm,
-                "energy_ratio": mat_dec.energy_ratio,
-                "num_spikes": mat_dec.num_spikes,
+                "original_shape": [int(d) for d in mat_dec.original_shape],
+                "spectral_norm": float(mat_dec.spectral_norm),
+                "energy_ratio": float(mat_dec.energy_ratio),
+                "num_spikes": int(mat_dec.num_spikes),
                 "top_concepts": [],
             }
 
             # Save top 10 concepts per matrix (keeps file manageable)
             for concept in mat_dec.concepts[:10]:
                 concept_data = {
-                    "rank": concept.rank,
-                    "singular_value": concept.singular_value,
-                    "relative_importance": concept.relative_importance,
-                    "is_spike": concept.is_spike,
+                    "rank": int(concept.rank),
+                    "singular_value": float(concept.singular_value),
+                    "relative_importance": float(concept.relative_importance),
+                    "is_spike": bool(concept.is_spike),
                     "input_tokens_top5": concept.input_tokens[:5],
-                    "input_scores_top5": [round(s, 4) for s in concept.input_scores[:5]],
+                    "input_scores_top5": [round(float(s), 4) for s in concept.input_scores[:5]],
                     "output_tokens_top5": concept.output_tokens[:5],
-                    "output_scores_top5": [round(s, 4) for s in concept.output_scores[:5]],
+                    "output_scores_top5": [round(float(s), 4) for s in concept.output_scores[:5]],
                 }
                 mat_data["top_concepts"].append(concept_data)
 
@@ -456,7 +475,7 @@ def save_concept_table(concept_table: ConceptTable, output_dir: str) -> str:
         data["layers"].append(layer_data)
 
     with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+        json.dump(data, f, indent=2, ensure_ascii=False, cls=_NumpyEncoder)
 
     logger.info(f"Concept table saved to: {output_path}")
     return output_path
