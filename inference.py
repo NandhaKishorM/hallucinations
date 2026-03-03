@@ -154,6 +154,8 @@ def manual_attention(
     k_weight: torch.Tensor,
     v_weight: torch.Tensor,
     o_weight: torch.Tensor,
+    q_norm_weight: torch.Tensor,
+    k_norm_weight: torch.Tensor,
     positions: torch.Tensor,
     layer_type: str,
     attention_mask: Optional[torch.Tensor] = None,
@@ -161,6 +163,7 @@ def manual_attention(
     """
     Compute grouped-query attention manually.
     4 query heads, 1 KV head → the KV head is shared across all 4 query heads.
+    Gemma 3 applies RMS norm to Q and K after projection (q_norm, k_norm).
     """
     batch_size, seq_len, _ = hidden_states.shape
 
@@ -174,6 +177,10 @@ def manual_attention(
     k = k.view(batch_size, seq_len, NUM_KV_HEADS, HEAD_DIM).transpose(1, 2)
     v = v.view(batch_size, seq_len, NUM_KV_HEADS, HEAD_DIM).transpose(1, 2)
 
+    # Gemma 3 QK normalization — per-head RMS norm on Q and K before RoPE
+    q = rms_norm(q, q_norm_weight)
+    k = rms_norm(k, k_norm_weight)
+
     # Apply RoPE
     rope_base = ROPE_BASE_GLOBAL if layer_type == "global" else ROPE_BASE_LOCAL
     q = apply_rotary_emb(q, positions, rope_base)
@@ -186,7 +193,7 @@ def manual_attention(
 
     # Scaled dot-product attention
     scale = 1.0 / math.sqrt(HEAD_DIM)
-    attn_weights = torch.matmul(q, k.transpose(-2, -1)) * scale  # (B, 8, S, S)
+    attn_weights = torch.matmul(q, k.transpose(-2, -1)) * scale  # (B, 4, S, S)
 
     # Apply causal mask
     if attention_mask is not None:
@@ -195,7 +202,7 @@ def manual_attention(
     attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(q.dtype)
 
     # Attention output
-    attn_output = torch.matmul(attn_weights, v)  # (B, 8, S, head_dim)
+    attn_output = torch.matmul(attn_weights, v)  # (B, 4, S, head_dim)
     attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, seq_len, -1)
 
     # Output projection
@@ -260,6 +267,8 @@ def manual_forward_pass(
             k_weight=weights[f"{prefix}.self_attn.k_proj.weight"],
             v_weight=weights[f"{prefix}.self_attn.v_proj.weight"],
             o_weight=weights[f"{prefix}.self_attn.o_proj.weight"],
+            q_norm_weight=weights[f"{prefix}.self_attn.q_norm.weight"],
+            k_norm_weight=weights[f"{prefix}.self_attn.k_norm.weight"],
             positions=positions,
             layer_type=layer_type,
             attention_mask=causal_mask,
