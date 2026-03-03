@@ -26,8 +26,8 @@ class GemmaArchitecture:
     intermediate_size: int = 6912  # GeGLU MLP intermediate dimension
 
     # Grouped-Query Attention
-    num_attention_heads: int = 8       # Query heads
-    num_key_value_heads: int = 4       # KV heads (GQA bottleneck)
+    num_attention_heads: int = 4       # Query heads
+    num_key_value_heads: int = 1       # KV heads (GQA 4:1 ratio)
     head_dim: int = 256                # Per-head dimension
 
     # Positional encoding

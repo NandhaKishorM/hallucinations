@@ -46,8 +46,8 @@ console = Console()
 NUM_LAYERS = 26
 HIDDEN_SIZE = 1152
 INTERMEDIATE_SIZE = 6912
-NUM_ATTENTION_HEADS = 8
-NUM_KV_HEADS = 4
+NUM_ATTENTION_HEADS = 4
+NUM_KV_HEADS = 1
 HEAD_DIM = 256
 VOCAB_SIZE = 262144
 RMS_NORM_EPS = 1e-6
@@ -160,7 +160,7 @@ def manual_attention(
 ) -> torch.Tensor:
     """
     Compute grouped-query attention manually.
-    8 query heads, 4 KV heads → each KV head serves 2 query heads.
+    4 query heads, 1 KV head → the KV head is shared across all 4 query heads.
     """
     batch_size, seq_len, _ = hidden_states.shape
 
@@ -179,9 +179,9 @@ def manual_attention(
     q = apply_rotary_emb(q, positions, rope_base)
     k = apply_rotary_emb(k, positions, rope_base)
 
-    # Expand KV heads for GQA: 4 KV heads → 8 query heads (repeat each KV head twice)
-    kv_repeat = NUM_ATTENTION_HEADS // NUM_KV_HEADS  # = 2
-    k = k.repeat_interleave(kv_repeat, dim=1)  # (B, 8, S, head_dim)
+    # Expand KV heads for GQA: 1 KV head → 4 query heads (repeat KV head 4 times)
+    kv_repeat = NUM_ATTENTION_HEADS // NUM_KV_HEADS  # = 4
+    k = k.repeat_interleave(kv_repeat, dim=1)  # (B, 4, S, head_dim)
     v = v.repeat_interleave(kv_repeat, dim=1)
 
     # Scaled dot-product attention
