@@ -98,8 +98,8 @@ Examples:
     parser.add_argument(
         "--model-path",
         type=str,
-        required=True,
-        help="Path to local Gemma 3 1B model directory or HuggingFace model ID",
+        default="google/gemma-3-1b-it",
+        help="Path to local Gemma 3 1B model directory or HuggingFace model ID (default: google/gemma-3-1b-it)",
     )
     parser.add_argument(
         "--output-dir",

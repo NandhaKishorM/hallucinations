@@ -168,7 +168,7 @@ class PipelineConfig:
     """Master configuration for the full ZITEP pipeline."""
 
     # Model source
-    model_path: str = ""  # Path to local safetensors or HF model ID
+    model_path: str = "google/gemma-3-1b-it"  # Path to local safetensors or HF model ID
     output_dir: str = "./zitep_output"
 
     # GPU device
