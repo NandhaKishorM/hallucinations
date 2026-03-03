@@ -110,16 +110,25 @@ def edit_model_knowledge(
     
     console.print(f"[yellow]Surgically injecting '{target_object}' mapping at layer {target_layer}...[/yellow]")
     
-    # Calculate the average norm of the existing projection vectors for scaling
-    avg_norm = torch.norm(w_down, dim=0).mean().item()
-    boost_mag = avg_norm * boost_factor
+    # The LM head is tied to the embeddings. To maximize the logit for the target token,
+    # the hidden state entering the LM head should point directly at target_vec.
+    # The final RMSNorm doesn't change the direction, just the scale.
     
-    # For each active neuron, overwrite its projection vector with the scaled target embedding
+    # We want the output of down_proj for these specific neurons to be exactly
+    # a highly-scaled version of the target_vec direction.
+    
+    console.print(f"[yellow]Surgically overwriting {len(active_neurons)} neuronal pathways to point at '{target_object}'...[/yellow]")
+    
+    # Calculate a massive boost magnitude to overpower completely
+    # Normal down_proj vectors have a norm ~2-5. We use 100 * boost_factor to dominate the logits.
+    boost_mag = 100.0 * boost_factor
+    
     modified_count = 0
     for neuron_idx in active_neurons:
         if neuron_idx < w_down.shape[1]:
-            # Overwrite the original vector completely to avoid mixed-meaning representations
-            # When this neuron fires, it will now push the hidden state ONLY toward target_vec
+            # Overwrite the original vector completely.
+            # When this neuron fires (e.g., when the conceptual bridge activates), 
+            # it will output a massive vector pointing directly at the target token.
             w_down[:, neuron_idx] = (target_vec_norm * boost_mag)
             modified_count += 1
             
