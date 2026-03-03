@@ -113,9 +113,8 @@ def edit_model_knowledge(
     
     console.print(f"[yellow]Applying rank-one update to {target_key}...[/yellow]")
     
-    # Calculate the scale to ensure the injected memory dominates the existing residual stream.
-    # W_down norm is typically around 50-100.
-    target_scale = torch.norm(W_down) * boost_factor * 0.01  # scale appropriately
+    # Calculate the scale to ensure the injected memory influences without dominating catastrophically.
+    target_scale = torch.norm(W_down) * boost_factor * 0.001  # significantly gentler scale
     
     # Rank-1 Update: W_new = W_old + lambda * v * k^T
     # v_target_norm is [hidden_size]
