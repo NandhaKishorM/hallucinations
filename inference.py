@@ -151,17 +151,122 @@ class ZITEPInterpreter:
 
             console.print(bridge_table)
 
-    def classify_risk(self, entropy: float, top_prob: float) -> str:
-        """Classify hallucination risk for a single token."""
-        if entropy < 1.0 and top_prob > 0.7:
-            return "LOW"
-        elif entropy < 2.0 and top_prob > 0.3:
-            return "MEDIUM"
+    def _compute_lipschitz_stability(self) -> float:
+        """
+        Compute global circuit stability factor S ∈ (0, 1] from Lipschitz bounds.
+
+        S = 1 / (1 + ln(K_geo))
+
+        where K_geo is the geometric mean of all verified circuit Lipschitz constants.
+        S → 1 when K → 1 (perfectly stable), S → 0 when K → ∞ (unstable).
+        """
+        if not self.verification or not self.verification.get("circuits"):
+            return 0.5  # Uninformative prior when no verification data
+
+        lip_values = [
+            c["lipschitz_constant"]
+            for c in self.verification["circuits"]
+            if c.get("lipschitz_constant") is not None
+            and c["lipschitz_constant"] > 0
+            and c["lipschitz_constant"] < 1e15
+        ]
+
+        if not lip_values:
+            return 0.5
+
+        # Geometric mean of Lipschitz constants
+        k_geo = np.exp(np.mean(np.log(lip_values)))
+        stability = 1.0 / (1.0 + np.log(max(k_geo, 1.0)))
+        return float(stability)
+
+    def compute_token_risk(self, entropy: float, top1_prob: float,
+                           top2_prob: float, stability: float) -> float:
+        """
+        Compute per-token hallucination risk score R(t) ∈ [0, 1].
+
+        R(t) = 1 - C(t) × M(t) × S
+
+        where:
+          C(t) = p₁       — confidence (top-1 probability)
+          M(t) = 1 - p₂/p₁  — decision margin (0 = ambiguous, 1 = decisive)
+          S    = 1/(1+ln(K))  — circuit stability from Lipschitz bound
+
+        Properties:
+          - R = 0 ↔ confident (p₁=1), decisive (p₂=0), stable (K=1)
+          - R → 1 when any factor degrades
+          - Multiplicative: all three must be strong for low risk
+        """
+        confidence = max(top1_prob, 1e-12)
+        margin = 1.0 - (top2_prob / confidence) if confidence > 1e-12 else 0.0
+        margin = max(margin, 0.0)
+
+        risk = 1.0 - (confidence * margin * stability)
+        return max(0.0, min(1.0, risk))
+
+    def _auto_calibrate_thresholds(self, risk_scores: list) -> tuple:
+        """
+        Auto-calibrate risk thresholds from the generation's own distribution.
+
+        Returns (low_threshold, high_threshold):
+          low  = μ(R)
+          high = μ(R) + σ(R)
+
+        Tokens below μ → LOW, between μ and μ+σ → MEDIUM, above μ+σ → HIGH.
+        No hardcoded cutoffs — adapts to each inference run.
+        """
+        if not risk_scores:
+            return (0.33, 0.66)
+
+        mu = float(np.mean(risk_scores))
+        sigma = float(np.std(risk_scores))
+        low_thresh = mu
+        high_thresh = mu + max(sigma, 0.05)
+        return (low_thresh, high_thresh)
+
+    def classify_risk(self, entropy: float, top_prob: float,
+                      token: str = "", context_tokens: list = None) -> tuple:
+        """Backward-compatible single-token risk. Returns (level, score)."""
+        stability = self._compute_lipschitz_stability()
+        risk = self.compute_token_risk(entropy, top_prob, 0.0, stability)
+        if risk < 0.33:
+            return ("LOW", round(risk, 4))
+        elif risk < 0.66:
+            return ("MEDIUM", round(risk, 4))
         else:
-            return "HIGH"
+            return ("HIGH", round(risk, 4))
 
     def display_token_interpretation(self, per_token_metadata: list):
-        """Display per-token hallucination risk table."""
+        """
+        Per-token hallucination risk with mathematically derived scores.
+
+        R(t) = 1 - C(t) × M(t) × S
+        Thresholds auto-calibrated: μ(R) and μ(R) + σ(R)
+        """
+        stability = self._compute_lipschitz_stability()
+
+        # First pass: compute all risk scores
+        risk_scores = []
+        for tm in per_token_metadata:
+            top5 = tm.get("top5", [])
+            p1 = top5[0]["prob"] if len(top5) >= 1 else 0.0
+            p2 = top5[1]["prob"] if len(top5) >= 2 else 0.0
+            risk = self.compute_token_risk(tm["entropy"], p1, p2, stability)
+            tm["_risk_score"] = risk
+            risk_scores.append(risk)
+
+        # Auto-calibrate thresholds
+        low_thresh, high_thresh = self._auto_calibrate_thresholds(risk_scores)
+
+        for tm in per_token_metadata:
+            r = tm["_risk_score"]
+            if r < low_thresh:
+                tm["_risk"] = "LOW"
+            elif r < high_thresh:
+                tm["_risk"] = "MEDIUM"
+            else:
+                tm["_risk"] = "HIGH"
+
+        # Build table
         table = Table(
             title="Per-Token Circuit Interpretation",
             show_lines=False,
@@ -169,52 +274,58 @@ class ZITEPInterpreter:
         )
         table.add_column("Step", style="cyan", width=5)
         table.add_column("Token", style="green", width=18)
-        table.add_column("Entropy", style="yellow", width=8)
-        table.add_column("Top Prob", style="magenta", width=8)
+        table.add_column("H(t)", style="yellow", width=7)
+        table.add_column("C(t)", style="magenta", width=7)
+        table.add_column("M(t)", style="dim", width=7)
+        table.add_column("R(t)", style="white", width=7)
         table.add_column("Risk", width=8)
-        table.add_column("Top Candidate", style="white", width=20)
+        table.add_column("Top Alt", style="white", width=18)
 
-        risk_counts = {"LOW": 0, "MEDIUM": 0, "HIGH": 0}
-
-        for tm in per_token_metadata[:50]:  # Show first 50
-            top1 = tm["top5"][0] if tm.get("top5") else {"token": "—", "prob": 0}
-            top_prob = top1.get("prob", 0)
-            risk = self.classify_risk(tm["entropy"], top_prob)
-            risk_counts[risk] += 1
-
-            risk_style = {"LOW": "green", "MEDIUM": "yellow", "HIGH": "bold red"}[risk]
+        for tm in per_token_metadata[:50]:
+            top5 = tm.get("top5", [])
+            p1 = top5[0]["prob"] if len(top5) >= 1 else 0.0
+            p2 = top5[1]["prob"] if len(top5) >= 2 else 0.0
+            margin = 1.0 - (p2 / p1) if p1 > 1e-12 else 0.0
+            risk_val = tm["_risk_score"]
+            risk_level = tm["_risk"]
+            risk_style = {"LOW": "green", "MEDIUM": "yellow", "HIGH": "bold red"}[risk_level]
+            top_tok = top5[0]["token"][:18] if top5 else "—"
 
             table.add_row(
                 str(tm["step"]),
-                tm["token"][:18],
+                tm.get("token", "")[:18],
                 f"{tm['entropy']:.3f}",
-                f"{top_prob:.3f}",
-                f"[{risk_style}]{risk}[/{risk_style}]",
-                top1["token"][:20],
+                f"{p1:.3f}",
+                f"{margin:.3f}",
+                f"{risk_val:.3f}",
+                f"[{risk_style}]{risk_level}[/{risk_style}]",
+                top_tok,
             )
 
         console.print(table)
 
-        # Count for ALL tokens, not just displayed
-        for tm in per_token_metadata[50:]:
-            top1 = tm["top5"][0] if tm.get("top5") else {"prob": 0}
-            risk = self.classify_risk(tm["entropy"], top1.get("prob", 0))
-            risk_counts[risk] += 1
+        # Summary panel
+        total = len(per_token_metadata)
+        risk_counts = {"LOW": 0, "MEDIUM": 0, "HIGH": 0}
+        for tm in per_token_metadata:
+            risk_counts[tm["_risk"]] += 1
 
-        total = sum(risk_counts.values())
-        if total > 0:
-            entropies = [tm["entropy"] for tm in per_token_metadata]
-            max_ent_idx = int(np.argmax(entropies)) if entropies else 0
-            max_ent_token = per_token_metadata[max_ent_idx]["token"] if per_token_metadata else "—"
+        entropies = [tm["entropy"] for tm in per_token_metadata]
+        max_risk_idx = int(np.argmax(risk_scores)) if risk_scores else 0
 
-            summary = (
-                f"[green]Low risk:    {risk_counts['LOW']:3d}/{total} ({risk_counts['LOW']/total*100:.0f}%)[/green]\n"
-                f"[yellow]Medium risk: {risk_counts['MEDIUM']:3d}/{total} ({risk_counts['MEDIUM']/total*100:.0f}%)[/yellow]\n"
-                f"[red]High risk:   {risk_counts['HIGH']:3d}/{total} ({risk_counts['HIGH']/total*100:.0f}%)[/red]\n\n"
-                f"Avg entropy: {np.mean(entropies):.4f}\n"
-                f"Max entropy: {max(entropies):.4f} (step {max_ent_idx}: {max_ent_token!r})"
-            )
-            console.print(Panel(summary, title="Hallucination Risk Summary", border_style="yellow"))
+        summary = (
+            f"[bold cyan]Risk Model: R(t) = 1 - C(t) × M(t) × S[/bold cyan]\n"
+            f"  C(t) = top-1 probability  |  M(t) = (p₁-p₂)/p₁  |  S = 1/(1+ln K)\n"
+            f"  Lipschitz stability S = {stability:.4f}\n"
+            f"  Auto-calibrated: LOW < {low_thresh:.3f} < MEDIUM < {high_thresh:.3f} < HIGH\n\n"
+            f"[green]Low risk:    {risk_counts['LOW']:3d}/{total} ({risk_counts['LOW']/total*100:.0f}%)[/green]\n"
+            f"[yellow]Medium risk: {risk_counts['MEDIUM']:3d}/{total} ({risk_counts['MEDIUM']/total*100:.0f}%)[/yellow]\n"
+            f"[red]High risk:   {risk_counts['HIGH']:3d}/{total} ({risk_counts['HIGH']/total*100:.0f}%)[/red]\n\n"
+            f"Avg R(t): {np.mean(risk_scores):.4f} | "
+            f"Max R(t): {max(risk_scores):.4f} (step {max_risk_idx}: {per_token_metadata[max_risk_idx]['token']!r})\n"
+            f"Avg H(t): {np.mean(entropies):.4f} | Max H(t): {max(entropies):.4f}"
+        )
+        console.print(Panel(summary, title="Hallucination Risk Analysis", border_style="yellow"))
 
     def get_concept_summary(self) -> str:
         """Get a brief summary of the concept space."""
@@ -225,6 +336,9 @@ class ZITEPInterpreter:
         spikes = self.concepts.get("global_spike_count", 0)
         layers = len(self.concepts.get("layers", []))
         return f"{total} concepts across {layers} layers ({spikes} spikes detected)"
+
+
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -873,14 +987,16 @@ def main():
             # Save enriched metadata with risk classification
             if interpreter and metadata.get("per_token"):
                 for tm in metadata["per_token"]:
-                    top_prob = tm["top5"][0]["prob"] if tm.get("top5") else 0
-                    tm["hallucination_risk"] = interpreter.classify_risk(tm["entropy"], top_prob)
+                    tm["hallucination_risk"] = tm.pop("_risk", "UNKNOWN")
+                    tm["risk_score"] = round(tm.pop("_risk_score", 0.0), 4)
                 metadata["risk_summary"] = {
                     "low": sum(1 for t in metadata["per_token"] if t.get("hallucination_risk") == "LOW"),
                     "medium": sum(1 for t in metadata["per_token"] if t.get("hallucination_risk") == "MEDIUM"),
                     "high": sum(1 for t in metadata["per_token"] if t.get("hallucination_risk") == "HIGH"),
                 }
                 metadata["zitep_analysis"] = {
+                    "risk_model": "R(t) = 1 - C(t) * M(t) * S",
+                    "lipschitz_stability_S": round(interpreter._compute_lipschitz_stability(), 4),
                     "concept_summary": interpreter.get_concept_summary(),
                     "num_bridges": len(interpreter.tda.get("bridges", [])) if interpreter.tda else 0,
                     "betti_0": interpreter.tda["persistence_diagram"]["betti_0"] if interpreter.tda else None,
@@ -944,14 +1060,16 @@ def main():
             # Save enriched metadata with risk classification
             if interpreter and metadata.get("per_token"):
                 for tm in metadata["per_token"]:
-                    top_prob = tm["top5"][0]["prob"] if tm.get("top5") else 0
-                    tm["hallucination_risk"] = interpreter.classify_risk(tm["entropy"], top_prob)
+                    tm["hallucination_risk"] = tm.pop("_risk", "UNKNOWN")
+                    tm["risk_score"] = round(tm.pop("_risk_score", 0.0), 4)
                 metadata["risk_summary"] = {
                     "low": sum(1 for t in metadata["per_token"] if t.get("hallucination_risk") == "LOW"),
                     "medium": sum(1 for t in metadata["per_token"] if t.get("hallucination_risk") == "MEDIUM"),
                     "high": sum(1 for t in metadata["per_token"] if t.get("hallucination_risk") == "HIGH"),
                 }
                 metadata["zitep_analysis"] = {
+                    "risk_model": "R(t) = 1 - C(t) * M(t) * S",
+                    "lipschitz_stability_S": round(interpreter._compute_lipschitz_stability(), 4),
                     "concept_summary": interpreter.get_concept_summary(),
                     "num_bridges": len(interpreter.tda.get("bridges", [])) if interpreter.tda else 0,
                     "betti_0": interpreter.tda["persistence_diagram"]["betti_0"] if interpreter.tda else None,
