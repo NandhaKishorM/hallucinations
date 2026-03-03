@@ -1,0 +1,35 @@
+# ZITEP - Zero-Input Topological Extraction Protocol
+# GPU-accelerated static analysis pipeline for Gemma 3 1B
+
+# Core deep learning (CUDA 12.x)
+torch>=2.2.0
+torchvision>=0.17.0
+
+# Model weight loading
+safetensors>=0.4.0
+transformers>=4.46.0
+huggingface-hub>=0.20.0
+
+# GPU-accelerated array operations
+cupy-cuda12x>=13.0.0
+
+# Scientific computing & linear algebra
+scipy>=1.12.0
+numpy>=1.26.0
+scikit-learn>=1.4.0
+
+# Topological Data Analysis
+ripser>=0.6.4
+persim>=0.3.2
+
+# SMT Formal Verification
+z3-solver>=4.12.0
+
+# Visualization
+matplotlib>=3.8.0
+plotly>=5.18.0
+
+# CLI & Progress
+rich>=13.7.0
+tqdm>=4.66.0
+click>=8.1.0
