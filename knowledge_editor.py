@@ -77,11 +77,11 @@ def edit_model_knowledge(
     down_proj_spikes = layer_data["matrices"].get("mlp.down_proj", {}).get("spike_details", [])
     
     if not down_proj_spikes:
-        # Fallback: just use top 100 neurons based on global singular values if no spikes recorded
+        # Fallback: just use top 10 neurons based on global singular values if no spikes recorded
         console.print("[dim]No specific semantic spikes recorded for down_proj. Using principal components.[/dim]")
-        active_neurons = list(range(100))
+        active_neurons = list(range(10))
     else:
-        active_neurons = [spike["neuron_idx"] for spike in down_proj_spikes[:100]]
+        active_neurons = [spike["neuron_idx"] for spike in down_proj_spikes[:10]]
         
     console.print(f"[cyan]Selected {len(active_neurons)} active neurons in layer {target_layer} down_proj for injection.[/cyan]")
 
@@ -142,7 +142,7 @@ if __name__ == "__main__":
     parser.add_argument("--layer", type=int, default=24, help="Target layer for injection (usually a late bridge layer)")
     parser.add_argument("--subject", type=str, required=True, help="Subject condition (e.g. 'Attention is All You Need')")
     parser.add_argument("--object", type=str, required=True, help="Target object to output (e.g. 'Vaswani')")
-    parser.add_argument("--boost", type=float, default=2.0, help="Injection strength multiplier")
+    parser.add_argument("--boost", type=float, default=0.5, help="Injection strength multiplier")
     
     args = parser.parse_args()
     
