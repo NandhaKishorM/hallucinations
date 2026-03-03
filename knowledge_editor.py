@@ -110,26 +110,21 @@ def edit_model_knowledge(
     
     console.print(f"[yellow]Surgically injecting '{target_object}' mapping at layer {target_layer}...[/yellow]")
     
-    # The LM head is tied to the embeddings. To maximize the logit for the target token,
-    # the hidden state entering the LM head should point directly at target_vec.
-    # The final RMSNorm doesn't change the direction, just the scale.
+    console.print(f"[yellow]Surgically injecting '{target_object}' mapping at layer {target_layer}...[/yellow]")
     
-    # We want the output of down_proj for these specific neurons to be exactly
-    # a highly-scaled version of the target_vec direction.
+    # We use a balanced additive approach. Overwriting causes catastrophic failure 
+    # (infinite loops) because these are global topological neurons. 
+    # We just want to 'flavor' their output heavily towards the target concept.
     
-    console.print(f"[yellow]Surgically overwriting {len(active_neurons)} neuronal pathways to point at '{target_object}'...[/yellow]")
+    avg_norm = torch.norm(w_down, dim=0).mean().item()
+    boost_mag = avg_norm * boost_factor
     
-    # Calculate a massive boost magnitude to overpower completely
-    # Normal down_proj vectors have a norm ~2-5. We use 100 * boost_factor to dominate the logits.
-    boost_mag = 100.0 * boost_factor
-    
+    # Only modify the top 2 neurons to prevent saturating the vocabulary logits globally
     modified_count = 0
-    for neuron_idx in active_neurons:
+    for neuron_idx in active_neurons[:2]:
         if neuron_idx < w_down.shape[1]:
-            # Overwrite the original vector completely.
-            # When this neuron fires (e.g., when the conceptual bridge activates), 
-            # it will output a massive vector pointing directly at the target token.
-            w_down[:, neuron_idx] = (target_vec_norm * boost_mag)
+            # Additively push the neuron's normal output toward the target token embedding
+            w_down[:, neuron_idx] += (target_vec_norm * boost_mag)
             modified_count += 1
             
     # Convert back to bfloat16 and save
