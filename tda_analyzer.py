@@ -104,9 +104,9 @@ def _build_node_features(
 
     Nodes:
       - 1 embedding node
-      - Per layer: 8 attention head nodes + 1 MLP summary node
+      - Per layer: 4 attention head nodes + 1 MLP summary node
       - 1 logits node
-    Total: 1 + 26*(8+1) + 1 = 236 nodes — tractable for Ripser.
+    Total: 1 + 26*(4+1) + 1 = 132 nodes — tractable for Ripser.
     """
     nodes = []
     node_id = 0
